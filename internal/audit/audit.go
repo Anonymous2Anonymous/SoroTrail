@@ -3,6 +3,13 @@
 package audit
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+)
+
+import (
 	"context"
 	"errors"
 	"fmt"
@@ -551,6 +558,146 @@ func (a *Auditor) fetchRange(ctx context.Context, from, to uint32) ([]rpc.Event,
 		}
 	}
 	return out, nil
+}
+
+// Record represents a tamper-evident audit trail entry.
+type Record struct {
+	ID          int64           `json:"id"`
+	Sequence    int64           `json:"sequence"`
+	Timestamp   time.Time       `json:"timestamp"`
+	TenantID    *int64          `json:"tenant_id,omitempty"`
+	Action      string          `json:"action"`
+	Actor       string          `json:"actor"`
+	Details     json.RawMessage `json:"details,omitempty"`
+	PrevHash    string          `json:"prev_hash"`
+	EntryHash   string          `json:"entry_hash"`
+}
+
+// Store defines the database operations required for the audit trail.
+type Store interface {
+	AppendRecord(ctx context.Context, action, actor string, tenantID *int64, details json.RawMessage) (*Record, error)
+	ListRecords(ctx context.Context, limit int) ([]Record, error)
+	ListTenantRecords(ctx context.Context, tenantID int64, limit int) ([]Record, error)
+	LatestRecord(ctx context.Context) (*Record, error)
+	CheckpointBeforePrune(ctx context.Context, before time.Time) (*Record, error)
+}
+
+// Verifier checks audit chain integrity and reports divergence points.
+type Verifier struct {
+	store  Store
+	logger *slog.Logger
+}
+
+// NewVerifier constructs a Verifier.
+func NewVerifier(store Store, logger *slog.Logger) *Verifier {
+	return &Verifier{store: store, logger: logger}
+}
+
+// VerifyChain checks the audit record chain, supporting bounded recent verification.
+func (v *Verifier) VerifyChain(ctx context.Context) (int64, error) {
+	records, err := v.store.ListRecords(ctx, 1000)
+	if err != nil {
+		return 0, fmt.Errorf("failed to list audit records for verification: %%w", err)
+	}
+
+	return VerifyRecordChain(records, v.logger)
+}
+
+// VerifyTenantChain verifies audit records visible to a specific tenant, ensuring tenant isolation.
+func (v *Verifier) VerifyTenantChain(ctx context.Context, tenantID int64) (int64, error) {
+	records, err := v.store.ListTenantRecords(ctx, tenantID, 1000)
+	if err != nil {
+		return 0, fmt.Errorf("failed to list tenant audit records for verification: %%w", err)
+	}
+
+	return VerifyRecordChain(records, v.logger)
+}
+
+// VerifyRecordChain checks a slice of records for cryptographic and sequence integrity.
+func VerifyRecordChain(records []Record, logger *slog.Logger) (int64, error) {
+	if len(records) == 0 {
+		return 0, nil
+	}
+
+	var expectedPrev = ""
+	for i, rec := range records {
+		if i > 0 && rec.Sequence != records[i-1].Sequence+1 {
+			return rec.Sequence, fmt.Errorf("sequence gap or truncation detected at sequence %%d", rec.Sequence)
+		}
+
+		if rec.PrevHash != expectedPrev {
+			return rec.Sequence, fmt.Errorf("previous hash mismatch at sequence %%d: got %%s, want %%s", rec.Sequence, rec.PrevHash, expectedPrev)
+		}
+
+		computed, err := ComputeEntryHash(rec.Sequence, rec.Timestamp, rec.TenantID, rec.Action, rec.Actor, rec.Details, rec.PrevHash)
+		if err != nil {
+			return rec.Sequence, fmt.Errorf("failed to compute hash for sequence %%d: %%w", rec.Sequence, err)
+		}
+
+		if rec.EntryHash != computed {
+			return rec.Sequence, fmt.Errorf("entry hash divergence at sequence %%d: recorded %%s, computed %%s", rec.Sequence, rec.EntryHash, computed)
+		}
+
+		expectedPrev = rec.EntryHash
+	}
+
+	if logger != nil {
+		logger.Info("audit chain verified successfully", "records_checked", len(records), "head_hash", expectedPrev)
+	}
+
+	return 0, nil
+}
+
+// ComputeEntryHash produces a canonicalized SHA-256 hash for an audit entry.
+func ComputeEntryHash(sequence int64, timestamp time.Time, tenantID *int64, action, actor string, details json.RawMessage, prevHash string) (string, error) {
+	rawDetails := []byte("null")
+	if len(details) > 0 {
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, details); err == nil {
+			rawDetails = compact.Bytes()
+		} else {
+			rawDetails = details
+		}
+	}
+
+	canonicalMap := map[string]any{
+		"sequence":  sequence,
+		"timestamp": timestamp.UTC().Format(time.RFC3339Nano),
+		"action":    action,
+		"actor":     actor,
+		"prev_hash": prevHash,
+	}
+	if tenantID != nil {
+		canonicalMap["tenant_id"] = *tenantID
+	}
+	data, err := json.Marshal(canonicalMap)
+	if err != nil {
+		return "", err
+	}
+
+	h := sha256.New()
+	h.Write(data)
+	h.Write([]byte("|"))
+	h.Write(rawDetails)
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// EmitCheckpoint publishes the chain head externally via slog and returns the head hash.
+func EmitCheckpoint(ctx context.Context, store Store, logger *slog.Logger) (string, error) {
+	latest, err := store.LatestRecord(ctx)
+	if err != nil {
+		return "", err
+	}
+	var headHash string
+	var seq int64
+	if latest != nil {
+		headHash = latest.EntryHash
+		seq = latest.Sequence
+	}
+	if logger != nil {
+		logger.Info("audit_checkpoint", "sequence", seq, "head_hash", headHash, "timestamp", time.Now().UTC().Format(time.RFC3339))
+	}
+	return headHash, nil
 }
 
 // advanceHWM persists the new audit HWM if it's strictly greater than

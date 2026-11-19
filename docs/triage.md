@@ -17,6 +17,25 @@ consistently without tribal knowledge.
 - **Be kind on close.** `duplicate`, `invalid`, and `wontfix` are labels, not
   judgments — always leave a one-line comment explaining the call.
 
+## Administrative Action Audit Trail & Tamper-Evident Verification
+
+Operators can verify the tamper-evident audit trail by running:
+
+```sh
+sorotrail audit verify
+```
+
+If the verification fails reporting a divergence point or hash mismatch, inspect the audit records table (`audit_records`) around the reported sequence number. A divergence indicates potential tampering, unauthorized row deletion, or storage corruption. Respond by reviewing database access controls, comparing external checkpoints emitted via log lines (`audit_checkpoint`), and restoring from a verified backup if necessary.
+
+### Append-Only Database Permissions
+
+To ensure the write path is append-only in practice, grant the application database user `INSERT` privilege on `audit_records` and revoke `UPDATE` and `DELETE` privileges. Database superusers or migration runners should manage schema evolution separately:
+
+```sql
+REVOKE UPDATE, DELETE ON audit_records FROM sorotrail_app;
+GRANT INSERT, SELECT ON audit_records TO sorotrail_app;
+```
+
 ## Label taxonomy
 
 ### `type/*` — what kind of work
