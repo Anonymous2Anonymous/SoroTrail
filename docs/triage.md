@@ -208,4 +208,36 @@ Every mutating HTTP endpoint on the router (`POST`, `PUT`, `PATCH`, `DELETE`) an
 
 Administrative action audit records are governed by `store.ActionAuditRetentionOptions` (`store.DefaultActionAuditRetentionAge = 365 days`, pruned via `store.PruneActionAuditLogs`), completely separate from event retention (`store.RetentionPruner` / `DeleteEventsBefore`). Short event retention windows never delete administrative action audit history.
 
+### Append-Only Database Permissions & Practice
+
+To ensure append-only guarantees in practice, database roles for the application runtime are restricted:
+- Grant `SELECT` and `INSERT` on `audit_trail_records` to the application connection role.
+- Explicitly **revoke** `UPDATE` and `DELETE` on `audit_trail_records` from the application role so that even if an application bug or compromised credential attempted to rewrite history, the database rejects the statement.
+- Database superusers or migration runners perform administrative maintenance.
+
+### Tamper-Evident Audit Verification & Incident Response
+
+The audit trail (`audit_trail_records`) is secured via a cryptographic hash chain where each record commits to the previous record's hash, sequence number, timestamp, and payload.
+
+#### Running verification
+
+Operators can verify the integrity of the audit chain at any time using the built-in CLI command:
+
+```sh
+sorotrail audit-verify --database-url postgres://...
+```
+
+If the chain is intact, it prints:
+```
+audit trail chain verification: INTACT
+```
+
+If tampering, deletion, or truncation has occurred, the command exits with a non-zero status and reports the exact sequence number where divergence occurred.
+
+#### Responding to verification failures
+
+1. **Do not modify the database further**; preserve snapshots and log output for forensic analysis.
+2. Compare the current chain head against external checkpoints published to logs or SIEM/monitoring systems.
+3. Determine the point of divergence and inspect database write permissions and access logs to identify the compromised credential or vector.
+
 
