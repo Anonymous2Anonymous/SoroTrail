@@ -26,7 +26,7 @@ func runAuditVerify(args []string) error {
 	}
 	defer cleanup()
 
-	firstDivergence, err := storeInst.VerifyAuditChain(ctx)
+	firstDivergence, err := storeInst.VerifyAuditChain(ctx, 0)
 	if err != nil {
 		return fmt.Errorf("audit chain verification failed at sequence %d: %w", firstDivergence, err)
 	}

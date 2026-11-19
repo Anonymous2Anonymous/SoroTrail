@@ -151,7 +151,7 @@ func (s *Postgres) QueryTenantAuditRecords(ctx context.Context, tenantID string,
 	if err != nil {
 		return nil, fmt.Errorf("querying tenant audit records: %w", err)
 	}
-	defer rows.Close(),
+	defer rows.Close()
 
 	var out []AuditTrailRecord
 	for rows.Next() {

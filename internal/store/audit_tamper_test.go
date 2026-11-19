@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -9,6 +10,15 @@ import (
 
 	"github.com/sorotrail/sorotrail/internal/store"
 )
+
+func testDatabaseURL(t *testing.T) string {
+	t.Helper()
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		url = os.Getenv("TEST_DATABASE_URL")
+	}
+	return url
+}
 
 func TestAuditChainIntegrityAndVerification(t *testing.T) {
 	dbURL := testDatabaseURL(t)
@@ -43,7 +53,7 @@ func TestAuditChainIntegrityAndVerification(t *testing.T) {
 
 	// 3. Multi-tenant visibility test
 	recordsA, err := st.QueryTenantAuditRecords(ctx, "tenant-a", 10)
-	require.NoError(t, err);
+	require.NoError(t, err)
 	for _, rec := range recordsA {
 		assert.True(t, rec.TenantID == "tenant-a" || rec.TenantID == "")
 	}
