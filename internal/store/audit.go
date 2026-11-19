@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -26,12 +27,13 @@ type AuditRecord struct {
 func ComputeEntryHash(sequence int64, timestamp time.Time, tenantID *int64, action, actor string, details json.RawMessage, prevHash string) (string, error) {
 	rawDetails := []byte("null")
 	if len(details) > 0 {
-		var compact bytesBuffer
-		_ = json.Compact(&compact, details)
-		rawDetails = compact.Bytes()
-	if len(rawDetails) == 0 {
-		rawDetails = details
-	}
+		var compact bytes.Buffer
+		err := json.Compact(&compact, details)
+		if err == nil {
+			rawDetails = compact.Bytes()
+		} else {
+			rawDetails = details
+		}
 	}
 
 	canonicalMap := map[string]any{
@@ -56,22 +58,9 @@ func ComputeEntryHash(sequence int64, timestamp time.Time, tenantID *int64, acti
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-type bytesBuffer struct {
-	buf []byte
-}
-
-func (b *bytesBuffer) Write(p []byte) (int, error) {
-	b.buf = append(b.buf, p...)
-	return len(p), nil
-}
-
-func (b *bytesBuffer) Bytes() []byte {
-	return b.buf
-}
-
 // AppendRecord inserts a new audit record into Postgres with hash chaining.
 func (db *Postgres) AppendRecord(ctx context.Context, action, actor string, tenantID *int64, details json.RawMessage) (*AuditRecord, error) {
-	tx, err := db.Pool.Begin(ctx)
+	tx, err := db.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +119,7 @@ func (db *Postgres) ListRecords(ctx context.Context, limit int) ([]AuditRecord, 
 	if limit > 0 {
 		query = fmt.Sprintf(`SELECT id, sequence, timestamp, tenant_id, action, actor, details, prev_hash, entry_hash FROM (SELECT id, sequence, timestamp, tenant_id, action, actor, details, prev_hash, entry_hash FROM audit_records ORDER BY sequence DESC LIMIT %d) sub ORDER BY sequence ASC`, limit)
 	}
-	rows, err := db.Pool.Query(ctx, query)
+	rows, err := db.pool.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +145,7 @@ func (db *Postgres) ListTenantRecords(ctx context.Context, tenantID int64, limit
 	if limit > 0 {
 		query = fmt.Sprintf(`SELECT id, sequence, timestamp, tenant_id, action, actor, details, prev_hash, entry_hash FROM (SELECT id, sequence, timestamp, tenant_id, action, actor, details, prev_hash, entry_hash FROM audit_records WHERE tenant_id = $1 ORDER BY sequence DESC LIMIT %d) sub ORDER BY sequence ASC`, limit)
 	}
-	rows, err := db.Pool.Query(ctx, query, tenantID)
+	rows, err := db.pool.Query(ctx, query, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +168,7 @@ func (db *Postgres) ListTenantRecords(ctx context.Context, tenantID int64, limit
 // LatestRecord returns the most recent audit record.
 func (db *Postgres) LatestRecord(ctx context.Context) (*AuditRecord, error) {
 	query := `SELECT id, sequence, timestamp, tenant_id, action, actor, details, prev_hash, entry_hash FROM audit_records ORDER BY sequence DESC LIMIT 1`
-	row := db.Pool.QueryRow(ctx, query)
+	row := db.pool.QueryRow(ctx, query)
 	var r AuditRecord
 	var rawDetails []byte
 	err := row.Scan(&r.ID, &r.Sequence, &r.Timestamp, &r.TenantID, &r.Action, &r.Actor, &rawDetails, &r.PrevHash, &r.EntryHash)
@@ -193,7 +182,7 @@ func (db *Postgres) LatestRecord(ctx context.Context) (*AuditRecord, error) {
 // CheckpointBeforePrune returns the latest audit record prior to pruning retention boundary.
 func (db *Postgres) CheckpointBeforePrune(ctx context.Context, before time.Time) (*AuditRecord, error) {
 	query := `SELECT id, sequence, timestamp, tenant_id, action, actor, details, prev_hash, entry_hash FROM audit_records WHERE timestamp < $1 ORDER BY sequence DESC LIMIT 1`
-	row := db.Pool.QueryRow(ctx, query, before)
+	row := db.pool.QueryRow(ctx, query, before)
 	var r AuditRecord
 	var rawDetails []byte
 	err := row.Scan(&r.ID, &r.Sequence, &r.Timestamp, &r.TenantID, &r.Action, &r.Actor, &rawDetails, &r.PrevHash, &r.EntryHash)
