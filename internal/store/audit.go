@@ -64,7 +64,9 @@ func (db *Postgres) AppendRecord(ctx context.Context, action, actor string, tena
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
 
 	var prevHash string
 	var nextSeq int64 = 1

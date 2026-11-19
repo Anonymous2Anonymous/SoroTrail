@@ -3,8 +3,8 @@
 package audit
 
 import (
-	"encoding/json"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
