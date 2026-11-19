@@ -27,7 +27,7 @@ func TestAuditChainIntegrityAndVerification(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	st, err := store.NewPostgres(ctx, dbURL)
+	st, err := store.NewPostgres(ctx, store.Config{DatabaseURL: dbURL})
 	require.NoError(t, err)
 	defer st.Close()
 
@@ -35,11 +35,11 @@ func TestAuditChainIntegrityAndVerification(t *testing.T) {
 	_, _ = st.Pool().Exec(ctx, "TRUNCATE TABLE audit_trail_records")
 
 	// 1. Intact chain test
-	r1, err := st.AppendAuditRecord(ctx, "tenant-a", "credential.create", "key_id=1")
+	_, err = st.AppendAuditRecord(ctx, "tenant-a", "credential.create", "key_id=1")
 	require.NoError(t, err)
 	r2, err := st.AppendAuditRecord(ctx, "tenant-b", "tenant.update", "tier=enterprise")
 	require.NoError(t, err)
-	r3, err := st.AppendAuditRecord(ctx, "tenant-a", "spec.override", "contract=CA123")
+	_, err = st.AppendAuditRecord(ctx, "tenant-a", "spec.override", "contract=CA123")
 	require.NoError(t, err)
 
 	div, err := st.VerifyAuditChain(ctx, 0)
