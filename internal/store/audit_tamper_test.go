@@ -27,7 +27,7 @@ func TestAuditChainIntegrityAndVerification(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	st, err := store.NewPostgres(ctx, store.Config{DatabaseURL: dbURL})
+	st, err := store.NewPostgres(ctx, dbURL)
 	require.NoError(t, err)
 	defer st.Close()
 
