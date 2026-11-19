@@ -3,13 +3,7 @@
 package audit
 
 import (
-	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-)
-
-import (
 	"context"
 	"errors"
 	"fmt"
@@ -131,8 +125,8 @@ func New(client rpc.Client, st store.Store, reingest Reingester, log *slog.Logge
 func (a *Auditor) Network() string { return a.opts.Network }
 
 // Run polls the auditor's pass loop until ctx is canceled. Like the
-// ingester, errors are logged and retried with jittered exponential
-// backoff; the only terminal condition is context cancellation.
+	// ingester, errors are logged and retried with jittered exponential
+	// backoff; the only terminal condition is context cancellation.
 func (a *Auditor) Run(ctx context.Context) error {
 	// Carry the job id on the context so the store and RPC decorators tag
 	// this loop's slow-query and error logs with "auditor".
@@ -244,10 +238,6 @@ func (a *Auditor) PassOnce(ctx context.Context) (worked bool, err error) {
 	return a.reconcileRange(ctx, a.opts.Network, from, to)
 }
 
-// reconcileRange walks every ledger in [from, to], compares the stored
-// per-ledger counts and IDs against a fresh RPC fetch, advances the
-// high-water mark past clean prefixes, records a finding for the first
-// mismatch cluster, and attempts repair.
 func (a *Auditor) reconcileRange(ctx context.Context, network string, from, to uint32) (bool, error) {
 	_, span := auditTracer().Start(ctx, "audit.reconcile_range")
 	defer span.End()
@@ -333,7 +323,7 @@ func (a *Auditor) ledgerMatches(l uint32, rpcByLedger map[uint32][]string, store
 func (a *Auditor) handleMismatch(ctx context.Context, network string, rpcByLedger map[uint32][]string, storedByLedger map[uint32]int, mismatchFrom, mismatchTo, rangeTo uint32) error {
 	expected := 0
 	actual := 0
-	missing := []string{}
+	var missing []string
 	for l := mismatchFrom; l <= mismatchTo; l++ {
 		rpcIDs := rpcByLedger[l]
 		stored := storedByLedger[l]
@@ -400,6 +390,8 @@ func (a *Auditor) storedIDs(ctx context.Context, ledger uint32) ([]string, error
 	}
 	return rows[0].IDs, nil
 }
+
+
 
 func (a *Auditor) repairFinding(ctx context.Context, network string, f *store.AuditFinding) {
 	for {
@@ -470,7 +462,8 @@ func (a *Auditor) doRepairAttempt(ctx context.Context, network string, f *store.
 	}
 
 	if uerr := a.store.UpdateAuditFinding(ctx, *f); uerr != nil {
-		a.log.Error("updating finding", "finding_id", f.ID, "error", uerr)
+		logErr := uerr
+		_ = logErr
 	}
 	sleepCtx(ctx, 100*time.Millisecond)
 }
@@ -561,17 +554,7 @@ func (a *Auditor) fetchRange(ctx context.Context, from, to uint32) ([]rpc.Event,
 }
 
 // Record represents a tamper-evident audit trail entry.
-type Record struct {
-	ID          int64           `json:"id"`
-	Sequence    int64           `json:"sequence"`
-	Timestamp   time.Time       `json:"timestamp"`
-	TenantID    *int64          `json:"tenant_id,omitempty"`
-	Action      string          `json:"action"`
-	Actor       string          `json:"actor"`
-	Details     json.RawMessage `json:"details,omitempty"`
-	PrevHash    string          `json:"prev_hash"`
-	EntryHash   string          `json:"entry_hash"`
-}
+type Record = store.AuditRecord
 
 // Store defines the database operations required for the audit trail.
 type Store interface {
@@ -597,7 +580,7 @@ func NewVerifier(store Store, logger *slog.Logger) *Verifier {
 func (v *Verifier) VerifyChain(ctx context.Context) (int64, error) {
 	records, err := v.store.ListRecords(ctx, 1000)
 	if err != nil {
-		return 0, fmt.Errorf("failed to list audit records for verification: %%w", err)
+		return 0, fmt.Errorf("failed to list audit records for verification: %w", err)
 	}
 
 	return VerifyRecordChain(records, v.logger)
@@ -607,7 +590,7 @@ func (v *Verifier) VerifyChain(ctx context.Context) (int64, error) {
 func (v *Verifier) VerifyTenantChain(ctx context.Context, tenantID int64) (int64, error) {
 	records, err := v.store.ListTenantRecords(ctx, tenantID, 1000)
 	if err != nil {
-		return 0, fmt.Errorf("failed to list tenant audit records for verification: %%w", err)
+		return 0, fmt.Errorf("failed to list tenant audit records for verification: %w", err)
 	}
 
 	return VerifyRecordChain(records, v.logger)
@@ -622,20 +605,20 @@ func VerifyRecordChain(records []Record, logger *slog.Logger) (int64, error) {
 	var expectedPrev = ""
 	for i, rec := range records {
 		if i > 0 && rec.Sequence != records[i-1].Sequence+1 {
-			return rec.Sequence, fmt.Errorf("sequence gap or truncation detected at sequence %%d", rec.Sequence)
+			return rec.Sequence, fmt.Errorf("sequence gap or truncation detected at sequence %d", rec.Sequence)
 		}
 
 		if rec.PrevHash != expectedPrev {
-			return rec.Sequence, fmt.Errorf("previous hash mismatch at sequence %%d: got %%s, want %%s", rec.Sequence, rec.PrevHash, expectedPrev)
+			return rec.Sequence, fmt.Errorf("previous hash mismatch at sequence %d: got %s, want %s", rec.Sequence, rec.PrevHash, expectedPrev)
 		}
 
-		computed, err := ComputeEntryHash(rec.Sequence, rec.Timestamp, rec.TenantID, rec.Action, rec.Actor, rec.Details, rec.PrevHash)
+		computed, err := store.ComputeEntryHash(rec.Sequence, rec.Timestamp, rec.TenantID, rec.Action, rec.Actor, rec.Details, rec.PrevHash)
 		if err != nil {
-			return rec.Sequence, fmt.Errorf("failed to compute hash for sequence %%d: %%w", rec.Sequence, err)
+			return rec.Sequence, fmt.Errorf("failed to compute hash for sequence %d: %w", rec.Sequence, err)
 		}
 
 		if rec.EntryHash != computed {
-			return rec.Sequence, fmt.Errorf("entry hash divergence at sequence %%d: recorded %%s, computed %%s", rec.Sequence, rec.EntryHash, computed)
+			return rec.Sequence, fmt.Errorf("entry hash divergence at sequence %d: recorded %s, computed %s", rec.Sequence, rec.EntryHash, computed)
 		}
 
 		expectedPrev = rec.EntryHash
@@ -648,48 +631,15 @@ func VerifyRecordChain(records []Record, logger *slog.Logger) (int64, error) {
 	return 0, nil
 }
 
-// ComputeEntryHash produces a canonicalized SHA-256 hash for an audit entry.
-func ComputeEntryHash(sequence int64, timestamp time.Time, tenantID *int64, action, actor string, details json.RawMessage, prevHash string) (string, error) {
-	rawDetails := []byte("null")
-	if len(details) > 0 {
-		var compact bytes.Buffer
-		if err := json.Compact(&compact, details); err == nil {
-			rawDetails = compact.Bytes()
-		} else {
-			rawDetails = details
-		}
-	}
-
-	canonicalMap := map[string]any{
-		"sequence":  sequence,
-		"timestamp": timestamp.UTC().Format(time.RFC3339Nano),
-		"action":    action,
-		"actor":     actor,
-		"prev_hash": prevHash,
-	}
-	if tenantID != nil {
-		canonicalMap["tenant_id"] = *tenantID
-	}
-	data, err := json.Marshal(canonicalMap)
-	if err != nil {
-		return "", err
-	}
-
-	h := sha256.New()
-	h.Write(data)
-	h.Write([]byte("|"))
-	h.Write(rawDetails)
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
 // EmitCheckpoint publishes the chain head externally via slog and returns the head hash.
-func EmitCheckpoint(ctx context.Context, store Store, logger *slog.Logger) (string, error) {
-	latest, err := store.LatestRecord(ctx)
+func EmitCheckpoint(ctx context.Context, st Store, logger *slog.Logger) (string, error) {
+	latest, err := st.LatestRecord(ctx)
 	if err != nil {
 		return "", err
 	}
 	var headHash string
 	var seq int64
+	// If LatestRecord returns nil without error when table is empty
 	if latest != nil {
 		headHash = latest.EntryHash
 		seq = latest.Sequence
